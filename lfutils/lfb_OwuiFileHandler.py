@@ -9,6 +9,7 @@
 # Dependencies:
 #   os, shutil (stdlib only)
 #   lfb_sqlite_docs: doc_exists(), add_doc()
+#   lfb_log: log()
 #
 # Dev Notes:
 #   Files are stored at <target_dir>/chat_<chat_id>/docs/<filename>
@@ -18,9 +19,11 @@
 import os
 import shutil
 from lfb_sqlite_docs import doc_exists, add_doc
+from lfb_log import log
 
 
 def save_attachment(file_data: dict, base_path: str, chat_id: str) -> str:
+    log("lfb_OwuiFileHandler", f"save_attachment(chat_id={chat_id})")
     if not os.path.exists(base_path):
         os.makedirs(base_path, exist_ok=True)
     target_dir = os.path.join(base_path, chat_id, "docs")
@@ -32,28 +35,32 @@ def save_attachment(file_data: dict, base_path: str, chat_id: str) -> str:
         raise FileNotFoundError(f"Source file not found at {source_path}")
     file_path = os.path.join(target_dir, filename)
     shutil.copy2(source_path, file_path)
+    log("lfb_OwuiFileHandler", f"save_attachment → saved to {file_path}")
     return file_path
 
 
 def handle_file_uploads(files: list, upload_dir: str, target_dir: str, chat_id: str):
+    log("lfb_OwuiFileHandler", f"handle_file_uploads(chat_id={chat_id}, {len(files)} files)")
     for file_item in files:
         file_info = file_item.get("file", {})
         file_id = file_info.get("id")
         filename = file_info.get("filename", "unknown_file")
         if not file_id:
+            log("lfb_OwuiFileHandler", "skipping file — no file_id")
             continue
         try:
             matched = [f for f in os.listdir(upload_dir) if f.startswith(file_id)]
             if matched:
                 file_info["path"] = os.path.join(upload_dir, matched[0])
+                log("lfb_OwuiFileHandler", f"matched upload file: {matched[0]}")
         except Exception as e:
-            print(f"LFDEBUG: Directory scan error: {e}")
+            log("lfb_OwuiFileHandler", f"directory scan error: {e}")
         try:
-            if not doc_exists(chat_id, filename):  # LFB02242026B
+            if not doc_exists(chat_id, filename):
                 save_attachment(file_item, target_dir, f"chat_{chat_id}")
-                add_doc(chat_id, filename)  # LFB02242026B
-                print(f"LFDEBUG: File saved.")
+                add_doc(chat_id, filename)
+                log("lfb_OwuiFileHandler", f"file saved and tracked: {filename}")
             else:
-                print(f"LFDEBUG: File already exists, skipping.")
+                log("lfb_OwuiFileHandler", f"file already exists, skipping: {filename}")
         except Exception as e:
-            print(f"LFDEBUG: Error saving file: {e}")
+            log("lfb_OwuiFileHandler", f"error saving file: {e}")

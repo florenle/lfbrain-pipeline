@@ -1,4 +1,5 @@
 # lfb_sqlite_docs.py
+# Status: In Development
 # Role: CRUD operations for the docs table.
 #       Tracks file metadata for uploaded documents. Actual files remain on disk.
 #
@@ -10,6 +11,7 @@
 #
 # Dependencies:
 #   lfb_sqlite: get_conn()
+#   lfb_log: log()
 #
 # Dev Notes:
 #   doc_id is a UUID generated at upload time
@@ -21,6 +23,7 @@
 import uuid
 from datetime import datetime, timezone
 from lfb_sqlite import get_conn
+from lfb_log import log
 
 
 def _now():
@@ -28,6 +31,7 @@ def _now():
 
 
 def add_doc(chat_id, filename):
+    log("lfb_sqlite_docs", f"add_doc({chat_id}, {filename})")
     conn = get_conn()
     doc_id = str(uuid.uuid4())
     with conn:
@@ -37,28 +41,35 @@ def add_doc(chat_id, filename):
             (doc_id, chat_id, filename, _now())
         )
     conn.close()
+    log("lfb_sqlite_docs", f"add_doc → doc_id={doc_id[:8]}...")
     return doc_id
 
 
 def get_docs_by_chat(chat_id):
+    log("lfb_sqlite_docs", f"get_docs_by_chat({chat_id})")
     conn = get_conn()
     rows = conn.execute(
         "SELECT * FROM docs WHERE chat_id = ? ORDER BY uploaded_at", (chat_id,)
     ).fetchall()
     conn.close()
+    log("lfb_sqlite_docs", f"get_docs_by_chat → {len(rows)} docs")
     return [dict(r) for r in rows]
 
 
 def doc_exists(chat_id, filename):
+    log("lfb_sqlite_docs", f"doc_exists({chat_id}, {filename})")
     conn = get_conn()
     row = conn.execute(
         "SELECT 1 FROM docs WHERE chat_id = ? AND filename = ?", (chat_id, filename)
     ).fetchone()
     conn.close()
-    return row is not None
+    result = row is not None
+    log("lfb_sqlite_docs", f"doc_exists → {result}")
+    return result
 
 
 def delete_docs_by_chat(chat_id):
+    log("lfb_sqlite_docs", f"delete_docs_by_chat({chat_id})")
     conn = get_conn()
     with conn:
         conn.execute("DELETE FROM docs WHERE chat_id = ?", (chat_id,))

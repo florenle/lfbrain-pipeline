@@ -4,10 +4,12 @@
 #
 # Key Functions:
 #   handle_command(command, chat_id): Dispatches slash commands, yields response lines.
+#   _cmd_info(chat_id): Returns chat_id, title, summary, docs.
 #
 # Dependencies:
 #   lfb_sqlite: get_chat()
 #   lfb_sqlite_docs: get_docs_by_chat()
+#   lfb_log: log()
 #
 # Dev Notes:
 #   Called from pipe() in lfbrain.py before orchestrator submission.
@@ -17,9 +19,11 @@
 
 from lfb_sqlite import get_chat
 from lfb_sqlite_docs import get_docs_by_chat
+from lfb_log import log
 
 
 def handle_command(command: str, chat_id: str):
+    log("lfb_commands", f"handle_command({command}, chat_id={chat_id})")
     parts = command.strip().split()
     cmd = parts[0].lower()
 
@@ -27,11 +31,13 @@ def handle_command(command: str, chat_id: str):
         yield from _cmd_info(chat_id)
         return
 
+    log("lfb_commands", f"unknown command: {cmd}")
     yield f"Unknown command: `{command}`\n"
     yield "Available commands: `/info`\n"
 
 
 def _cmd_info(chat_id: str):
+    log("lfb_commands", f"_cmd_info({chat_id})")
     chat = get_chat(chat_id)
     if not chat:
         yield f"No chat found for ID: {chat_id}\n"

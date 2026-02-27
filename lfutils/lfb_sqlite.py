@@ -1,4 +1,5 @@
 # lfb_sqlite.py
+# Status: In Development
 # Role: SQLite-based storage for lfbrain pipeline. Single source of truth for all chat data.
 #       Replaces context.json and last.json.
 #
@@ -15,7 +16,7 @@
 #   delete_chat(chat_id): Deletes chat and cascades to blocks, jobs, docs.
 #
 # Dependencies:
-#   None (stdlib only: sqlite3, datetime, uuid)
+#   lfb_log: log()
 #
 # Dev Notes:
 #   DB lives at /home/florenle/x/dev/openwebui/chats/lfbrain.db
@@ -26,6 +27,7 @@
 
 import sqlite3
 from datetime import datetime, timezone
+from lfb_log import log
 
 DB_PATH = "/home/florenle/x/dev/openwebui/chats/lfbrain.db"
 
@@ -39,6 +41,7 @@ def get_conn():
 
 
 def init_db():
+    log("lfb_sqlite", "init_db() called")
     conn = get_conn()
     with conn:
         conn.executescript("""
@@ -82,8 +85,9 @@ def init_db():
         # LFB02242026B: clean up orphaned jobs from previous crash
         conn.execute(
             "UPDATE jobs SET status = 'failed', error = 'orphaned at startup' WHERE status = 'running'"
-        )        
+        )
     conn.close()
+    log("lfb_sqlite", "init_db() complete")
 
 
 def _now():
@@ -91,6 +95,7 @@ def _now():
 
 
 def create_chat(chat_id, title=None):
+    log("lfb_sqlite", f"create_chat({chat_id})")
     conn = get_conn()
     now = _now()
     with conn:
@@ -102,13 +107,17 @@ def create_chat(chat_id, title=None):
 
 
 def get_chat(chat_id):
+    log("lfb_sqlite", f"get_chat({chat_id})")
     conn = get_conn()
     row = conn.execute("SELECT * FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
     conn.close()
-    return dict(row) if row else None
+    result = dict(row) if row else None
+    log("lfb_sqlite", f"get_chat({chat_id}) → {result}")
+    return result
 
 
 def update_chat_title(chat_id, title):
+    log("lfb_sqlite", f"update_chat_title({chat_id}, {title})")
     conn = get_conn()
     with conn:
         conn.execute(
@@ -119,6 +128,7 @@ def update_chat_title(chat_id, title):
 
 
 def update_chat_summary(chat_id, summary):
+    log("lfb_sqlite", f"update_chat_summary({chat_id}, {summary})")
     conn = get_conn()
     with conn:
         conn.execute(
@@ -129,6 +139,7 @@ def update_chat_summary(chat_id, summary):
 
 
 def toggle_save(chat_id):
+    log("lfb_sqlite", f"toggle_save({chat_id})")
     conn = get_conn()
     with conn:
         conn.execute(
@@ -139,6 +150,7 @@ def toggle_save(chat_id):
 
 
 def list_chats():
+    log("lfb_sqlite", "list_chats()")
     conn = get_conn()
     rows = conn.execute("SELECT chat_id, title, summary FROM chats ORDER BY last_updated DESC").fetchall()
     conn.close()
@@ -146,6 +158,7 @@ def list_chats():
 
 
 def delete_chat(chat_id):
+    log("lfb_sqlite", f"delete_chat({chat_id})")
     conn = get_conn()
     with conn:
         conn.execute("DELETE FROM chats WHERE chat_id = ?", (chat_id,))

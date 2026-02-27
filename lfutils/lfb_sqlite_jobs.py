@@ -1,4 +1,5 @@
 # lfb_sqlite_jobs.py
+# Status: In Development
 # Role: CRUD operations for the jobs table.
 #       Tracks active job lifecycle. Replaces last.json.
 #
@@ -13,6 +14,7 @@
 #
 # Dependencies:
 #   lfb_sqlite: get_conn()
+#   lfb_log: log()
 #
 # Dev Notes:
 #   Job row is created in pipe() at submission time
@@ -23,6 +25,7 @@
 
 from datetime import datetime, timezone
 from lfb_sqlite import get_conn
+from lfb_log import log
 
 
 def _now():
@@ -30,6 +33,7 @@ def _now():
 
 
 def create_job(job_id, block_id, chat_id):
+    log("lfb_sqlite_jobs", f"create_job({job_id[:8]}..., block={block_id[:8]}..., chat={chat_id})")
     conn = get_conn()
     with conn:
         conn.execute(
@@ -41,6 +45,7 @@ def create_job(job_id, block_id, chat_id):
 
 
 def get_job(job_id):
+    log("lfb_sqlite_jobs", f"get_job({job_id[:8]}...)")
     conn = get_conn()
     row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
     conn.close()
@@ -48,6 +53,7 @@ def get_job(job_id):
 
 
 def get_job_by_block(block_id):
+    log("lfb_sqlite_jobs", f"get_job_by_block({block_id[:8]}...)")
     conn = get_conn()
     row = conn.execute("SELECT * FROM jobs WHERE block_id = ?", (block_id,)).fetchone()
     conn.close()
@@ -55,6 +61,7 @@ def get_job_by_block(block_id):
 
 
 def update_job_status(job_id, status, error=None):
+    log("lfb_sqlite_jobs", f"update_job_status({job_id[:8]}..., status={status})")
     conn = get_conn()
     with conn:
         conn.execute(
@@ -65,6 +72,7 @@ def update_job_status(job_id, status, error=None):
 
 
 def set_killme(job_id):
+    log("lfb_sqlite_jobs", f"set_killme({job_id[:8]}...)")
     conn = get_conn()
     with conn:
         conn.execute(
@@ -75,6 +83,7 @@ def set_killme(job_id):
 
 
 def delete_job(job_id):
+    log("lfb_sqlite_jobs", f"delete_job({job_id[:8]}...)")
     conn = get_conn()
     with conn:
         conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
@@ -82,10 +91,13 @@ def delete_job(job_id):
 
 
 def get_active_job_by_chat(chat_id):
+    log("lfb_sqlite_jobs", f"get_active_job_by_chat({chat_id})")
     conn = get_conn()
     row = conn.execute(
         "SELECT * FROM jobs WHERE chat_id = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1",
         (chat_id,)
     ).fetchone()
     conn.close()
-    return dict(row) if row else None
+    result = dict(row) if row else None
+    log("lfb_sqlite_jobs", f"get_active_job_by_chat → {result['job_id'][:8] if result else None}")
+    return result
