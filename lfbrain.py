@@ -5,7 +5,7 @@
 # Key Functions:
 #   inlet(): Copies uploaded files, creates chat in DB, updates title.
 #   pipe(): Creates block, submits job, streams status updates, writes system/assistant content.
-#   outlet(): No-op — all DB writes handled in pipe().
+#   outlet(): Deletes active job on completion.
 #
 # Dependencies:
 #   lfb_OwuiFileHandler, lfb_sqlite, lfb_sqlite_blocks, lfb_sqlite_jobs,
@@ -16,6 +16,8 @@
 #   __event_emitter__ is not supported in pipelines framework.
 #   stream_job() yields ("result", value) or ("failed", value) sentinels.
 #   GeneratorExit handled in pipe() for stop button press.
+#   lfbrain_chat_id is injected by inlet() into body — pipe() cannot access chat_id directly.
+#   outlet() uses body.get("chat_id") directly — OpenWebUI always provides it there.
 
 import os
 import sys
@@ -28,7 +30,7 @@ sys.path.append("/app/pipelines/lfutils")
 from lfb_OwuiFileHandler import handle_file_uploads
 from lfb_sqlite import init_db, create_chat, update_chat_title
 from lfb_sqlite_blocks import add_block, update_block_system, update_block_assistant
-from lfb_sqlite_jobs import create_job
+from lfb_sqlite_jobs import create_job, get_active_job_by_chat, delete_job
 from lfb_orchestrator import submit_job, stream_job
 from lfb_commands import handle_command
 from lfb_log import log
@@ -66,7 +68,7 @@ class Pipeline:
             self.valves.target_directory,
             chat_id,
         )
-        body["lfbrain_chat_id"] = chat_id
+        body["lfbrain_chat_id"] = chat_id  # LFB: pipe() cannot access chat_id directly
         log("lfbrain", f"inlet complete — chat_id={chat_id}, title={title}")
         return body
 
@@ -134,6 +136,11 @@ class Pipeline:
 
 
     async def outlet(self, body: dict, __user__: dict) -> dict:
-        log("lfbrain", "outlet() — no-op, DB writes handled in pipe()")
+        chat_id = body.get("chat_id") or body.get("metadata", {}).get("chat_id")
+        log("lfbrain", f"outlet(chat_id={chat_id})")
+        if chat_id:
+            job = get_active_job_by_chat(chat_id)
+            if job:
+                delete_job(job["job_id"])
+                log("lfbrain", f"outlet — deleted job {job['job_id'][:8]}...")
         return body
-    
