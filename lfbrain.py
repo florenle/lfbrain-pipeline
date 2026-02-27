@@ -101,7 +101,9 @@ class Pipeline:
         try:
             job_id = submit_job(self.orchestrator_url, chat_id)
             create_job(job_id, block_id, chat_id)
-            yield f"{self.ts()} ; Job submitted (id: {job_id[:8]}...)\n"
+            job_submitted_line = f"{self.ts()} ; Job submitted (id: {job_id[:8]}...)\n"
+            system_lines.append(job_submitted_line)  # LFB02242026B: capture in system_content
+            yield job_submitted_line
         except Exception as e:
             log("lfbrain", f"pipe — orchestrator error: {e}")
             yield f"{self.ts()} ; Orchestrator error: {str(e)}"
