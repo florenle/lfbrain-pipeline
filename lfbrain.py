@@ -102,6 +102,7 @@ class Pipeline:
             job_id = submit_job(self.orchestrator_url, chat_id)
             create_job(job_id, block_id, chat_id)
             job_submitted_line = f"{self.ts()} ; Job submitted (id: {job_id[:8]}...)\n"
+            system_lines: list[str] = []
             system_lines.append(job_submitted_line)  # LFB02242026B: capture in system_content
             yield job_submitted_line
         except Exception as e:
