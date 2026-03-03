@@ -5,6 +5,7 @@
 # Key Functions:
 #   inlet(): Copies uploaded files, creates chat in DB, updates title.
 #   pipe(): Creates block, submits job, streams status updates, writes system/assistant content.
+#           Slash command turns are written as blocks same as regular turns.
 #   outlet(): Deletes active job on completion.
 #
 # Dependencies:
@@ -18,6 +19,8 @@
 #   GeneratorExit handled in pipe() for stop button press.
 #   lfbrain_chat_id is injected by inlet() into body — pipe() cannot access chat_id directly.
 #   outlet() uses body.get("chat_id") directly — OpenWebUI always provides it there.
+#   Slash command turns are written as blocks (user_content=command, assistant_content=output).
+#   rewrite_chat_history() called only by commands that modify block structure (/loadAsHistory, /rmb).
 
 import os
 import sys
@@ -83,33 +86,36 @@ class Pipeline:
     ) -> Iterator:
         chat_id = body.get("lfbrain_chat_id")
         log("lfbrain", f"pipe(chat_id={chat_id}, msg={user_message[:40]}...)")
-        log("lfbrain", f"pipe — messages: {body.get('messages', [])[:2]}")
         if not chat_id:
             yield "No chat context found."
             return
 
-        if user_message.strip().startswith("/"):
-            log("lfbrain", f"pipe — slash command intercepted: {user_message.strip()}")
-            yield from handle_command(user_message.strip(), chat_id, self.valves.openwebui_api_key)
-            return
-
+        # All turns get a block — slash commands and regular jobs alike
         block_id = str(uuid.uuid4())
-        log("lfbrain", f"pipe — new block_id={block_id[:8]}...")
         add_block(chat_id, block_id, user_message)
+
+        if user_message.strip().startswith("/"):
+            log("lfbrain", f"pipe — slash command: {user_message.strip()}")
+            result_lines = []
+            try:
+                for chunk in handle_command(user_message.strip(), chat_id, self.valves.openwebui_api_key):
+                    result_lines.append(chunk)
+                    yield chunk
+            finally:
+                update_block_assistant(block_id, "".join(result_lines))
+            return
 
         try:
             job_id = submit_job(self.orchestrator_url, chat_id)
             create_job(job_id, block_id, chat_id)
             job_submitted_line = f"{self.ts()} ; Job submitted (id: {job_id[:8]}...)\n"
-            system_lines: list[str] = []
-            system_lines.append(job_submitted_line)
+            system_lines: list[str] = [job_submitted_line]
             yield job_submitted_line
         except Exception as e:
             log("lfbrain", f"pipe — orchestrator error: {e}")
             yield f"{self.ts()} ; Orchestrator error: {str(e)}"
             return
 
-        system_lines = []
         assistant_result = None
         try:
             for item in stream_job(self.orchestrator_url, job_id, self.ts):
