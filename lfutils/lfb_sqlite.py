@@ -177,7 +177,7 @@ def list_chats():
     log("lfb_sqlite", "list_chats()")
     conn = get_conn()
     rows = conn.execute(
-        "SELECT chat_id, title, description FROM chats ORDER BY last_updated DESC"
+        "SELECT chat_id, title, description, last_updated FROM chats ORDER BY last_updated DESC"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

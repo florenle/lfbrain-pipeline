@@ -4,22 +4,22 @@
 #
 # Key Functions:
 #   handle_command(command, chat_id, api_key): Dispatches slash commands, yields response lines.
-#   _cmd_info(parts, chat_id): Returns one-line chat info for current or specified chat.
-#   _cmd_load(parts, chat_id): Streams full chat JSON in <think>, yields durable summary line.
+#   _cmd_info(parts, chat_id): Returns one-line chat info including docs for current or specified chat.
+#   _cmd_load(parts, chat_id): Yields summary line then fenced JSON of full chat. Durable.
 #   _cmd_lsc(chat_id): Lists all chats, one line each.
 #   _cmd_kill(parts): Sends kill signal to a job.
 #
 # Dependencies:
 #   lfb_sqlite: get_chat(), list_chats()
 #   lfb_sqlite_blocks: get_blocks_by_chat()
+#   lfb_sqlite_docs: get_docs_by_chat()
 #   lfb_sqlite_jobs: set_killme()
 #   lfb_log: log()
 #
 # Dev Notes:
 #   Called from pipe() in lfbrain.py — pipe() owns block creation for the command turn itself.
 #   These functions only yield output — pipe() writes user_content + assistant_content to DB.
-#   /load JSON is yielded inside <think>...</think> — ephemeral, not stored.
-#   /load visible response line is stored as assistant_content — survives branch reconciliation.
+#   /load JSON is a fenced code block in assistant response — durable, survives branch reconciliation.
 #   Slash command blocks are filtered from /load JSON output.
 #
 # Schema: LFB03042026A
@@ -27,8 +27,20 @@
 import json
 from lfb_sqlite import get_chat, list_chats
 from lfb_sqlite_blocks import get_blocks_by_chat
+from lfb_sqlite_docs import get_docs_by_chat
 from lfb_sqlite_jobs import set_killme
 from lfb_log import log
+
+
+def _fmt_dt(iso_str: str | None) -> str:
+    if not iso_str:
+        return "?"
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(iso_str)
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return iso_str
 
 
 def handle_command(command: str, chat_id: str, api_key: str = ""):
@@ -65,13 +77,15 @@ def _cmd_info(parts: list, chat_id: str):
         yield f"No chat found for ID: {target_id}\n"
         return
     title = chat.get("title") or "Untitled"
-    created = chat.get("created_at") or "?"
-    modified = chat.get("last_updated") or "?"
+    created = _fmt_dt(chat.get("created_at"))
+    modified = _fmt_dt(chat.get("last_updated"))
     description = chat.get("description") or ""
     summary = chat.get("summary") or ""
+    docs = get_docs_by_chat(target_id)
+    docs_str = ", ".join(d["filename"] for d in docs) if docs else "none"
     yield (
         f"Chat {target_id} — Title: {title} · Created: {created} · "
-        f"Modified: {modified} · Description: {description} · Summary: {summary}"
+        f"Modified: {modified} · Description: {description} · Summary: {summary} · Docs: {docs_str}"
     )
 
 
@@ -94,25 +108,24 @@ def _cmd_load(parts: list, chat_id: str):
         if not (b.get("user_content") or "").startswith("/")
     ]
 
+    title = chat.get("title") or "Untitled"
+    description = chat.get("description") or ""
+
     payload = {
         "chat_id": target_id,
-        "title": chat.get("title") or "Untitled",
-        "description": chat.get("description") or "",
+        "title": title,
+        "description": description,
         "summary": chat.get("summary") or "",
         "created_at": chat.get("created_at") or "",
         "last_updated": chat.get("last_updated") or "",
         "blocks": filtered_blocks,
     }
 
-    yield "<think>\n"
-    yield json.dumps(payload, indent=2, ensure_ascii=False)
-    yield "\n</think>\n"
-
-    title = chat.get("title") or "Untitled"
     yield (
         f"Successfully loaded chat {target_id} — Title: {title} · "
-        f"Blocks: {len(filtered_blocks)} · Description: {chat.get('description') or ''}"
+        f"Blocks: {len(filtered_blocks)} · Description: {description}\n\n"
     )
+    yield f"```json\n{json.dumps(payload, indent=2, ensure_ascii=False)}\n```"
 
 
 def _cmd_lsc(chat_id: str):
@@ -124,7 +137,7 @@ def _cmd_lsc(chat_id: str):
     for c in chats:
         yield (
             f"{c['chat_id']} · Title: {c.get('title') or 'Untitled'} · "
-            f"Modified: {c.get('last_updated') or '?'} · Description: {c.get('description') or ''}\n"
+            f"Modified: {_fmt_dt(c.get('last_updated'))} · Description: {c.get('description') or ''}\n"
         )
 
 
