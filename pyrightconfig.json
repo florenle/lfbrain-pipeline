@@ -1,6 +1,6 @@
 // pyrightconfig.json
 {
-  "extraPaths": [
-    "lfutils"
-  ]
+  "extraPaths": ["lfutils"],
+  "venvPath": ".",
+  "venv": ".venv"
 }

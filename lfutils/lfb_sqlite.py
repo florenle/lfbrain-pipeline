@@ -1,7 +1,6 @@
 # lfb_sqlite.py
 # Status: In Development
 # Role: SQLite-based storage for lfbrain pipeline. Single source of truth for all chat data.
-#       Replaces context.json and last.json.
 #
 # Key Functions:
 #   init_db(): Creates lfbrain.db and all tables if not exist. Call once at pipeline startup.
@@ -10,9 +9,11 @@
 #   create_chat(chat_id, title): Creates a new chat row.
 #   get_chat(chat_id): Returns chat row or None.
 #   update_chat_title(chat_id, title): Updates title and last_updated.
+#   update_chat_description(chat_id, description): Updates description and last_updated.
 #   update_chat_summary(chat_id, summary): Updates summary and last_updated.
+#   clear_chat_summaries(chat_id): Sets description=NULL, summary=NULL, updates last_updated.
 #   toggle_save(chat_id): Flips save flag 0↔1.
-#   list_chats(): Returns all chats as {chat_id, title, summary}.
+#   list_chats(): Returns all chats as {chat_id, title, description}.
 #   delete_chat(chat_id): Deletes chat and cascades to blocks, jobs, docs.
 #
 # Dependencies:
@@ -22,8 +23,9 @@
 #   DB lives at /home/florenle/x/dev/openwebui/chats/lfbrain.db
 #   WAL mode enabled for safe concurrent access
 #   Foreign keys enforced — deleting a chat cascades to blocks, jobs, docs
-#   Block seq is auto-assigned per chat — used for display ordering and /rmb targeting
 #   Slash command turns are never written to the DB
+#
+# Schema: LFB03042026A
 
 import sqlite3
 from datetime import datetime, timezone
@@ -48,19 +50,20 @@ def init_db():
             CREATE TABLE IF NOT EXISTS chats (
                 chat_id      TEXT PRIMARY KEY,
                 title        TEXT,
+                description  TEXT,
                 summary      TEXT,
                 created_at   TEXT NOT NULL,
                 last_updated TEXT NOT NULL,
                 save         INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS blocks (
-                block_id           TEXT PRIMARY KEY,
-                chat_id            TEXT NOT NULL,
-                seq                INTEGER NOT NULL,
-                user_content       TEXT,
-                system_content     TEXT,
-                assistant_content  TEXT,
-                created_at         TEXT NOT NULL,
+                block_id          TEXT PRIMARY KEY,
+                chat_id           TEXT NOT NULL,
+                seq               INTEGER NOT NULL,
+                owui_message_id   TEXT,
+                user_content      TEXT,
+                assistant_content TEXT,
+                created_at        TEXT NOT NULL,
                 FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
                 UNIQUE (chat_id, seq)
             );
@@ -82,7 +85,6 @@ def init_db():
                 FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
             );
         """)
-        # LFB02242026B: clean up orphaned jobs from previous crash
         conn.execute(
             "UPDATE jobs SET status = 'failed', error = 'orphaned at startup' WHERE status = 'running'"
         )
@@ -127,6 +129,17 @@ def update_chat_title(chat_id, title):
     conn.close()
 
 
+def update_chat_description(chat_id, description):
+    log("lfb_sqlite", f"update_chat_description({chat_id}, {description})")
+    conn = get_conn()
+    with conn:
+        conn.execute(
+            "UPDATE chats SET description = ?, last_updated = ? WHERE chat_id = ?",
+            (description, _now(), chat_id)
+        )
+    conn.close()
+
+
 def update_chat_summary(chat_id, summary):
     log("lfb_sqlite", f"update_chat_summary({chat_id}, {summary})")
     conn = get_conn()
@@ -134,6 +147,17 @@ def update_chat_summary(chat_id, summary):
         conn.execute(
             "UPDATE chats SET summary = ?, last_updated = ? WHERE chat_id = ?",
             (summary, _now(), chat_id)
+        )
+    conn.close()
+
+
+def clear_chat_summaries(chat_id):
+    log("lfb_sqlite", f"clear_chat_summaries({chat_id})")
+    conn = get_conn()
+    with conn:
+        conn.execute(
+            "UPDATE chats SET description = NULL, summary = NULL, last_updated = ? WHERE chat_id = ?",
+            (_now(), chat_id)
         )
     conn.close()
 
@@ -152,7 +176,9 @@ def toggle_save(chat_id):
 def list_chats():
     log("lfb_sqlite", "list_chats()")
     conn = get_conn()
-    rows = conn.execute("SELECT chat_id, title, summary FROM chats ORDER BY last_updated DESC").fetchall()
+    rows = conn.execute(
+        "SELECT chat_id, title, description FROM chats ORDER BY last_updated DESC"
+    ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
