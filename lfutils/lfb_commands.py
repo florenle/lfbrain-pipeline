@@ -36,9 +36,10 @@ def _fmt_dt(iso_str: str | None) -> str:
     if not iso_str:
         return "?"
     try:
-        from datetime import datetime, timezone
-        dt = datetime.fromisoformat(iso_str)
-        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+        from datetime import datetime, timezone, timedelta
+        EST = timezone(timedelta(hours=-5))
+        dt = datetime.fromisoformat(iso_str).astimezone(EST)
+        return dt.strftime("%Y-%m-%d %H:%M")
     except Exception:
         return iso_str
 
@@ -102,11 +103,15 @@ def _cmd_load(parts: list, chat_id: str):
         return
 
     blocks = get_blocks_by_chat(target_id)
-    filtered_blocks = [
-        {"seq": b["seq"], "user": b.get("user_content") or "", "assistant": b.get("assistant_content") or ""}
-        for b in blocks
-        if not (b.get("user_content") or "").startswith("/")
-    ]
+    filtered_blocks = []
+    for b in blocks:
+        user = b.get("user_content") or ""
+        if not user.startswith("/") or user.startswith("/load"):
+            filtered_blocks.append({
+                "seq": b["seq"],
+                "user": user,
+                "assistant": b.get("assistant_content") or "",
+            })
 
     title = chat.get("title") or "Untitled"
     description = chat.get("description") or ""

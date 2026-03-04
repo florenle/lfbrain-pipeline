@@ -136,8 +136,13 @@ class Pipeline:
 
         body["lfbrain_chat_id"] = chat_id
 
+        # Capture incoming message owui_message_id before stripping ids
+        incoming = body.get("messages", [])
+        if incoming:
+            body["lfbrain_owui_message_id"] = incoming[-1].get("id")
+
         # Strip id from all messages before passing to LLM
-        for msg in body.get("messages", []):
+        for msg in incoming:
             msg.pop("id", None)
 
         log("lfbrain", f"inlet complete — chat_id={chat_id}, title={title}")
@@ -157,11 +162,8 @@ class Pipeline:
             yield "No chat context found."
             return
 
-        # owui_message_id: last message in body["messages"] is the current user turn
-        owui_message_id = None
-        raw_messages = body.get("messages", [])
-        if raw_messages:
-            owui_message_id = raw_messages[-1].get("id")
+        # owui_message_id captured in inlet() before id stripping
+        owui_message_id = body.get("lfbrain_owui_message_id")
 
         block_id = str(uuid.uuid4())
         add_block(chat_id, block_id, owui_message_id, user_message)
