@@ -4,32 +4,30 @@
 #
 # Key Functions:
 #   handle_command(command, chat_id, api_key): Dispatches slash commands, yields response lines.
-#   _cmd_info(chat_id): Returns chat_id, title, summary, docs.
-#   _cmd_load_as_one(parts, chat_id, api_key): Streams full source chat history as single assistant block.
-#   _cmd_load_as_history(parts, chat_id, api_key): Appends source blocks individually into current chat.
+#   _cmd_info(parts, chat_id): Returns one-line chat info for current or specified chat.
+#   _cmd_load(parts, chat_id): Streams full chat JSON in <think>, yields durable summary line.
+#   _cmd_lsc(chat_id): Lists all chats, one line each.
+#   _cmd_kill(parts): Sends kill signal to a job.
 #
 # Dependencies:
-#   lfb_sqlite: get_chat()
-#   lfb_sqlite_docs: get_docs_by_chat()
-#   lfb_sqlite_blocks: get_blocks_by_chat(), add_block()
-#   lfb_owui_api: rewrite_chat_history()
+#   lfb_sqlite: get_chat(), list_chats()
+#   lfb_sqlite_blocks: get_blocks_by_chat()
+#   lfb_sqlite_jobs: set_killme()
 #   lfb_log: log()
 #
 # Dev Notes:
-#   Called from pipe() in lfbrain.py - pipe() owns block creation for the command turn itself.
-#   These functions only yield output - pipe() writes user_content + assistant_content to DB.
-#   api_key: OpenWebUI pipelines API key (Valve), used by rewrite_chat_history().
-#   rewrite_chat_history() called only by /loadAsHistory and /rmb - not /loadAsOne or /info.
-#   /loadAsOne and /info: OpenWebUI records response natively, no rewrite needed.
+#   Called from pipe() in lfbrain.py — pipe() owns block creation for the command turn itself.
+#   These functions only yield output — pipe() writes user_content + assistant_content to DB.
+#   /load JSON is yielded inside <think>...</think> — ephemeral, not stored.
+#   /load visible response line is stored as assistant_content — survives branch reconciliation.
+#   Slash command blocks are filtered from /load JSON output.
 #
-# /loadAsOne [-v] [chat_id]: streams full source chat history as single assistant block.
-# /loadAsHistory [-v] [chat_id]: appends source blocks individually, rewrites OpenWebUI history.
+# Schema: LFB03042026A
 
-import uuid
-from lfb_sqlite import get_chat
-from lfb_sqlite_docs import get_docs_by_chat
-from lfb_sqlite_blocks import get_blocks_by_chat, add_block
-from lfb_owui_api import rewrite_chat_history
+import json
+from lfb_sqlite import get_chat, list_chats
+from lfb_sqlite_blocks import get_blocks_by_chat
+from lfb_sqlite_jobs import set_killme
 from lfb_log import log
 
 
@@ -39,121 +37,102 @@ def handle_command(command: str, chat_id: str, api_key: str = ""):
     cmd = parts[0].lower()
 
     if cmd == "/info":
-        yield from _cmd_info(chat_id)
+        yield from _cmd_info(parts, chat_id)
         return
 
-    if cmd == "/loadasone":
-        yield from _cmd_load_as_one(parts, chat_id, api_key)
+    if cmd == "/load":
+        yield from _cmd_load(parts, chat_id)
         return
 
-    if cmd == "/loadashistory":
-        yield from _cmd_load_as_history(parts, chat_id, api_key)
+    if cmd == "/lsc":
+        yield from _cmd_lsc(chat_id)
+        return
+
+    if cmd == "/kill":
+        yield from _cmd_kill(parts)
         return
 
     log("lfb_commands", f"unknown command: {cmd}")
     yield f"Unknown command: {command}\n"
-    yield "Available commands: /info, /loadAsOne, /loadAsHistory\n"
+    yield "Available commands: /info, /load, /lsc, /kill\n"
 
 
-def _cmd_info(chat_id: str):
-    log("lfb_commands", f"_cmd_info({chat_id})")
-    chat = get_chat(chat_id)
+def _cmd_info(parts: list, chat_id: str):
+    target_id = parts[1] if len(parts) > 1 else chat_id
+    log("lfb_commands", f"_cmd_info(target={target_id})")
+    chat = get_chat(target_id)
     if not chat:
-        yield f"No chat found for ID: {chat_id}\n"
+        yield f"No chat found for ID: {target_id}\n"
         return
     title = chat.get("title") or "Untitled"
-    summary = chat.get("summary") or title
-    docs = get_docs_by_chat(chat_id)
-    docs_str = ", ".join(d["filename"] for d in docs) if docs else "none"
-    yield f"**Chat ID:** {chat_id}\n"
-    yield f"**Title:** {title}\n"
-    yield f"**Summary:** {summary}\n"
-    yield f"**Docs:** {docs_str}\n"
+    created = chat.get("created_at") or "?"
+    modified = chat.get("last_updated") or "?"
+    description = chat.get("description") or ""
+    summary = chat.get("summary") or ""
+    yield (
+        f"Chat {target_id} — Title: {title} · Created: {created} · "
+        f"Modified: {modified} · Description: {description} · Summary: {summary}"
+    )
 
 
-def _parse_load_args(parts: list, current_chat_id: str):
-    verbose = False
-    target_chat_id = current_chat_id
-    args = parts[1:]
-    if args and args[0] == "-v":
-        verbose = True
-        args = args[1:]
-    if args:
-        target_chat_id = args[0]
-    return verbose, target_chat_id
+def _cmd_load(parts: list, chat_id: str):
+    if len(parts) < 2:
+        yield "Usage: /load <chat_id>\n"
+        return
+    target_id = parts[1]
+    log("lfb_commands", f"_cmd_load(target={target_id})")
 
-
-def _cmd_load_as_one(parts: list, chat_id: str, api_key: str):
-    verbose, target_chat_id = _parse_load_args(parts, chat_id)
-    log("lfb_commands", f"_cmd_load_as_one(target={target_chat_id}, verbose={verbose})")
-
-    chat = get_chat(target_chat_id)
+    chat = get_chat(target_id)
     if not chat:
-        yield f"No chat found for ID: {target_chat_id}\n"
+        yield f"No chat found for ID: {target_id}\n"
         return
 
+    blocks = get_blocks_by_chat(target_id)
+    filtered_blocks = [
+        {"seq": b["seq"], "user": b.get("user_content") or "", "assistant": b.get("assistant_content") or ""}
+        for b in blocks
+        if not (b.get("user_content") or "").startswith("/")
+    ]
+
+    payload = {
+        "chat_id": target_id,
+        "title": chat.get("title") or "Untitled",
+        "description": chat.get("description") or "",
+        "summary": chat.get("summary") or "",
+        "created_at": chat.get("created_at") or "",
+        "last_updated": chat.get("last_updated") or "",
+        "blocks": filtered_blocks,
+    }
+
+    yield "<think>\n"
+    yield json.dumps(payload, indent=2, ensure_ascii=False)
+    yield "\n</think>\n"
+
     title = chat.get("title") or "Untitled"
-    summary = chat.get("summary") or title
-    docs = get_docs_by_chat(target_chat_id)
-    docs_str = ", ".join(d["filename"] for d in docs) if docs else "none"
-
-    yield "***-0-***\n"
-    yield f"*Chat ID: {target_chat_id}\n"
-    yield f"*Title: {title}\n"
-    yield f"*Summary: {summary}\n"
-    yield f"*Docs: {docs_str}\n"
-
-    blocks = get_blocks_by_chat(target_chat_id)
-    for i, block in enumerate(blocks, start=1):
-        yield f"***-{i}-***\n"
-        user_content = block.get("user_content") or ""
-        system_content = block.get("system_content") or ""
-        assistant_content = block.get("assistant_content") or ""
-        if user_content:
-            yield f"**user:** {user_content}\n"
-        if verbose and system_content:
-            yield f"**system:** {system_content}\n"
-        if assistant_content:
-            yield f"**assistant:** {assistant_content}\n"
+    yield (
+        f"Successfully loaded chat {target_id} — Title: {title} · "
+        f"Blocks: {len(filtered_blocks)} · Description: {chat.get('description') or ''}"
+    )
 
 
-def _cmd_load_as_history(parts: list, chat_id: str, api_key: str):
-    verbose, target_chat_id = _parse_load_args(parts, chat_id)
-    log("lfb_commands", f"_cmd_load_as_history(target={target_chat_id}, verbose={verbose})")
-
-    chat = get_chat(target_chat_id)
-    if not chat:
-        yield f"No chat found for ID: {target_chat_id}\n"
+def _cmd_lsc(chat_id: str):
+    log("lfb_commands", "_cmd_lsc()")
+    chats = list_chats()
+    if not chats:
+        yield "No chats found.\n"
         return
-
-    title = chat.get("title") or "Untitled"
-    summary = chat.get("summary") or title
-    docs = get_docs_by_chat(target_chat_id)
-    docs_str = ", ".join(d["filename"] for d in docs) if docs else "none"
-
-    # This command's own assistant response = /info of source chat
-    yield f"*Chat ID: {target_chat_id}\n"
-    yield f"*Title: {title}\n"
-    yield f"*Summary: {summary}\n"
-    yield f"*Docs: {docs_str}\n"
-
-    # Copy source blocks into current chat pipeline SQLite with new UUIDs
-    source_blocks = get_blocks_by_chat(target_chat_id)
-    for block in source_blocks:
-        new_block_id = str(uuid.uuid4())
-        add_block(
-            chat_id,
-            new_block_id,
-            block.get("user_content") or "",
-            system_content=block.get("system_content"),
-            assistant_content=block.get("assistant_content"),
+    for c in chats:
+        yield (
+            f"{c['chat_id']} · Title: {c.get('title') or 'Untitled'} · "
+            f"Modified: {c.get('last_updated') or '?'} · Description: {c.get('description') or ''}\n"
         )
-        log("lfb_commands", f"_cmd_load_as_history - copied block -> {new_block_id[:8]}...")
 
-    # Rewrite OpenWebUI history with all current chat blocks
-    # combine_system=True merges system+assistant to match native OpenWebUI format
-    all_blocks = get_blocks_by_chat(chat_id)
-    ok = rewrite_chat_history(chat_id, all_blocks, api_key, combine_system=True)
-    if not ok:
-        yield "\nWarning: OpenWebUI history sync failed. Pipeline SQLite updated but UI may be out of sync.\n"
 
+def _cmd_kill(parts: list):
+    if len(parts) < 2:
+        yield "Usage: /kill <job_id>\n"
+        return
+    job_id = parts[1]
+    log("lfb_commands", f"_cmd_kill(job_id={job_id})")
+    set_killme(job_id)
+    yield f"Kill signal sent to job {job_id}"
