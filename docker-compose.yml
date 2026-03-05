@@ -47,6 +47,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    env_file:
+      - /home/florenle/x/dev/openwebui/lfbrain-orchestrator/.env
     networks:
       - backend-net
 
