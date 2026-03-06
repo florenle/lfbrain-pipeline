@@ -125,10 +125,10 @@ class Pipeline:
                 response = client.get(f"{self.orchestrator_url}/models", timeout=5.0)
                 response.raise_for_status()
                 models = response.json().get("data", [])
-                return [{"id": f"lfbrain.{m['id']}", "name": f"lfbrain/{m['id']}"} for m in models]
+                return [{"id": m['id'], "name": f"lfbrain/{m['id']}"} for m in models]
         except Exception as e:
             log("lfbrain", f"pipelines() — failed to fetch models: {e}")
-            return [{"id": "lfbrain.local", "name": "lfbrain/local"}]
+            return [{"id": "local", "name": "lfbrain/local"}]
 
     def ts(self):
         return datetime.now().strftime("%H:%M:%S")
