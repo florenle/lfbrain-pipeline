@@ -3,8 +3,10 @@
 # Role: Main pipeline class. Coordinates inlet, pipe, and outlet using lfutils.
 #
 # Key Functions:
-#   inlet(): Branch-safe sync of SQLite against body["messages"]. Creates chat,
-#            updates title, handles file uploads, injects lfbrain_chat_id, strips message ids.
+#   pipelines(): Proxies GET /models from orchestrator. Exposes lfbrain.<model_hint> entries to OWUI.
+#   inlet(): Branch-safe sync of SQLite against body["messages"]. Creates chat, updates title,
+#            persists model_hint from body["model"], handles file uploads, injects lfbrain_chat_id,
+#            strips message ids.
 #   pipe(): Creates block, submits job, streams status as <think>...</think>,
 #           writes assistant content. Slash commands handled inline.
 #   outlet(): True no-op except delete_job().
@@ -22,21 +24,30 @@
 #   outlet() uses body.get("chat_id") directly — OpenWebUI always provides it there.
 #   system_content is ephemeral — streamed as <think>...</think>, never stored.
 #   owui_message_id is the sync key for branch reconciliation.
-#   model_hint defaults to "local" — /setmodel command and chat-scoped model selection TBD.
+#   model_hint is read from body["model"] in inlet(), stripped of "lfbrain." prefix, persisted to DB.
+#   pipe() reads model_hint from get_chat() — falls back to DEFAULT_MODEL if missing.
 #
-# Schema: LFB03042026A
+# Schema: LFB03052026A
 
 import os
 import re
 import sys
 import uuid
+import httpx
 from datetime import datetime
 from pydantic import BaseModel
 from typing import Iterator
 
 sys.path.append("/app/pipelines/lfutils")
 from lfb_OwuiFileHandler import handle_file_uploads
-from lfb_sqlite import init_db, create_chat, update_chat_title, clear_chat_summaries
+from lfb_sqlite import (
+    init_db,
+    create_chat,
+    get_chat,
+    update_chat_title,
+    update_chat_model_hint,
+    clear_chat_summaries,
+)
 from lfb_sqlite_blocks import (
     add_block,
     update_block_assistant,
@@ -48,6 +59,8 @@ from lfb_sqlite_jobs import create_job, get_active_job_by_chat, delete_job
 from lfb_orchestrator import submit_job, stream_job, kill_job
 from lfb_commands import handle_command
 from lfb_log import log
+
+DEFAULT_MODEL = "local"
 
 
 def remove_details(content: str) -> str:
@@ -105,6 +118,16 @@ class Pipeline:
         self.valves = self.Valves()
         self.orchestrator_url = "http://lfbrain-orchestrator:8081"
 
+    def pipelines(self) -> list:
+        try:
+            with httpx.Client() as client:
+                response = client.get(f"{self.orchestrator_url}/models", timeout=5.0)
+                models = response.json().get("data", [])
+                return [{"id": f"lfbrain.{m['id']}", "name": f"LFBrain / {m['id']}"} for m in models]
+        except Exception as e:
+            log("lfbrain", f"pipelines() — failed to fetch models: {e}")
+            return [{"id": "lfbrain.local", "name": "LFBrain / local"}]
+
     def ts(self):
         return datetime.now().strftime("%H:%M:%S")
 
@@ -132,6 +155,10 @@ class Pipeline:
         if title:
             update_chat_title(chat_id, title)
 
+        model_hint = body.get("model", "").removeprefix("lfbrain.") or DEFAULT_MODEL
+        update_chat_model_hint(chat_id, model_hint)
+        log("lfbrain", f"inlet — model_hint={model_hint}")
+
         handle_file_uploads(
             body.get("files", []),
             "/app/backend/data/uploads",
@@ -139,23 +166,20 @@ class Pipeline:
             chat_id,
         )
 
-        # Sync SQLite against active branch — body["messages"] excludes the new incoming message
         messages = body.get("messages", [])
         if len(messages) >= 2:
             sync_blocks(chat_id, messages[:-1] if len(messages) % 2 == 1 else messages)
 
         body["lfbrain_chat_id"] = chat_id
 
-        # Capture incoming message owui_message_id before stripping ids
         incoming = body.get("messages", [])
         if incoming:
             body["lfbrain_owui_message_id"] = incoming[-1].get("id")
 
-        # Strip id from all messages before passing to LLM
         for msg in incoming:
             msg.pop("id", None)
 
-        log("lfbrain", f"inlet complete — chat_id={chat_id}, title={title}")
+        log("lfbrain", f"inlet complete — chat_id={chat_id}, title={title}, model_hint={model_hint}")
         return body
 
     def pipe(
@@ -172,9 +196,7 @@ class Pipeline:
             yield "No chat context found."
             return
 
-        # owui_message_id captured in inlet() before id stripping
         owui_message_id = body.get("lfbrain_owui_message_id")
-
         block_id = str(uuid.uuid4())
         add_block(chat_id, block_id, owui_message_id, user_message)
 
@@ -189,17 +211,17 @@ class Pipeline:
                 update_block_assistant(block_id, "".join(result_lines))
             return
 
+        model_hint = (get_chat(chat_id) or {}).get("model_hint", DEFAULT_MODEL)
         job_id = None
         try:
             job_id = submit_job(
                 self.orchestrator_url,
                 query=user_message,
                 context=self._build_context(messages),
-                model_hint="local",  # TODO: read from chat row — /setmodel sprint backlog
+                model_hint=model_hint,
             )
             create_job(job_id, block_id, chat_id)
-            job_submitted_line = f"{self.ts()} ; Job submitted (id: {job_id[:8]}...)\n"
-            yield f"<think>{job_submitted_line}"
+            yield f"<think>{self.ts()} ; Job submitted (id: {job_id[:8]}...) model: {model_hint}\n"
         except Exception as e:
             log("lfbrain", f"pipe — orchestrator error: {e}")
             yield f"<think>{self.ts()} ; Orchestrator error: {str(e)}</think>"
