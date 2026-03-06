@@ -11,6 +11,7 @@
 #   update_chat_title(chat_id, title): Updates title and last_updated.
 #   update_chat_description(chat_id, description): Updates description and last_updated.
 #   update_chat_summary(chat_id, summary): Updates summary and last_updated.
+#   update_chat_model_hint(chat_id, model_hint): Updates model_hint and last_updated.
 #   clear_chat_summaries(chat_id): Sets description=NULL, summary=NULL, updates last_updated.
 #   toggle_save(chat_id): Flips save flag 0↔1.
 #   list_chats(): Returns all chats as {chat_id, title, description}.
@@ -25,7 +26,7 @@
 #   Foreign keys enforced — deleting a chat cascades to blocks, jobs, docs
 #   Slash command turns are never written to the DB
 #
-# Schema: LFB03042026A
+# Schema: LFB03052026A
 
 import sqlite3
 from datetime import datetime, timezone
@@ -54,7 +55,8 @@ def init_db():
                 summary      TEXT,
                 created_at   TEXT NOT NULL,
                 last_updated TEXT NOT NULL,
-                save         INTEGER NOT NULL DEFAULT 0
+                save         INTEGER NOT NULL DEFAULT 0,
+                model_hint   TEXT NOT NULL DEFAULT 'local'
             );
             CREATE TABLE IF NOT EXISTS blocks (
                 block_id          TEXT PRIMARY KEY,
@@ -150,6 +152,15 @@ def update_chat_summary(chat_id, summary):
         )
     conn.close()
 
+def update_chat_model_hint(chat_id, model_hint):
+    log("lfb_sqlite", f"update_chat_model_hint({chat_id}, {model_hint})")
+    conn = get_conn()
+    with conn:
+        conn.execute(
+            "UPDATE chats SET model_hint = ?, last_updated = ? WHERE chat_id = ?",
+            (model_hint, _now(), chat_id)
+        )
+    conn.close()
 
 def clear_chat_summaries(chat_id):
     log("lfb_sqlite", f"clear_chat_summaries({chat_id})")

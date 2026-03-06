@@ -195,7 +195,7 @@ class Pipeline:
                 self.orchestrator_url,
                 query=user_message,
                 context=self._build_context(messages),
-                model_hint="groq",  # TODO: read from chat row — /setmodel sprint backlog
+                model_hint="local",  # TODO: read from chat row — /setmodel sprint backlog
             )
             create_job(job_id, block_id, chat_id)
             job_submitted_line = f"{self.ts()} ; Job submitted (id: {job_id[:8]}...)\n"
