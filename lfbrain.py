@@ -114,7 +114,7 @@ class Pipeline:
     def __init__(self):
         init_db()
         self.id = "lfbrain"
-        self.name = "Welcome to lfbrain"
+        self.name = "lfbrain"
         self.type = "manifold"
         self.valves = self.Valves()
         self.orchestrator_url = "http://lfbrain-orchestrator:8081"
@@ -123,12 +123,12 @@ class Pipeline:
         try:
             with httpx.Client() as client:
                 response = client.get(f"{self.orchestrator_url}/models", timeout=5.0)
-                response.raise_for_status()  # ← add this to catch non-200 responses
+                response.raise_for_status()
                 models = response.json().get("data", [])
-                return [{"id": f"lfbrain.{m['id']}", "name": f"LFBrain / {m['id']}"} for m in models]
+                return [{"id": f"lfbrain.{m['id']}", "name": f"lfbrain/{m['id']}"} for m in models]
         except Exception as e:
             log("lfbrain", f"pipelines() — failed to fetch models: {e}")
-            return [{"id": "lfbrain.local", "name": "LFBrain / local"}]
+            return [{"id": "lfbrain.local", "name": "lfbrain/local"}]
 
     def ts(self):
         return datetime.now().strftime("%H:%M:%S")
@@ -157,7 +157,10 @@ class Pipeline:
         if title:
             update_chat_title(chat_id, title)
 
-        model_hint = body.get("model", "").removeprefix("lfbrain.") or DEFAULT_MODEL
+        raw = body.get("model", "")
+        model_hint = raw.removeprefix("lfbrain.") or DEFAULT_MODEL
+        if not model_hint or model_hint == "lfbrain":
+            model_hint = DEFAULT_MODEL
         update_chat_model_hint(chat_id, model_hint)
         log("lfbrain", f"inlet — model_hint={model_hint}")
 
