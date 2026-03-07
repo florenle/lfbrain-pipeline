@@ -18,8 +18,10 @@
 # Dev Notes:
 #   pipe() is a sync Generator - async pipe is not supported in pipelines framework.
 #   __event_emitter__ is not supported in pipelines framework.
-#   pipe() drives async stream_job_http() via a dedicated asyncio event loop.
-#   GeneratorExit handled in pipe() — closes async generator via loop.run_until_complete(agen.aclose()).
+#   pipe() bridges async stream_job_http() via threading.Thread + queue.Queue.
+#   asyncio.run() in thread creates isolated event loop — no conflict with anyio.
+#   GeneratorExit stops queue consumption only — no yield, no loop ops. Thread drains naturally.
+#   </think> closed at first token chunk — before GeneratorExit can interfere.
 #   lfbrain_chat_id is injected by inlet() into body — pipe() cannot access chat_id directly.
 #   outlet() uses body.get("chat_id") directly — OpenWebUI always provides it there.
 #   think chunks accumulated and wrapped in <think>...</think> tags.
@@ -31,8 +33,10 @@
 
 import asyncio
 import os
+import queue
 import re
 import sys
+import threading
 import uuid
 import httpx
 from datetime import datetime
@@ -220,27 +224,40 @@ class Pipeline:
         model_hint = (get_chat(chat_id) or {}).get("model_hint", DEFAULT_MODEL)
         log("lfbrain", f"pipe — model_hint={model_hint}")
 
-        loop = asyncio.new_event_loop()
-        agen = stream_job_http(
-            self.orchestrator_url,
-            query=user_message,
-            context=self._build_context(messages),
-            model_hint=model_hint,
-        )
+        # Bridge async stream_job_http() into sync pipe() via a dedicated thread + queue.
+        # asyncio.run() in the thread creates its own event loop, isolated from anyio.
+        q: queue.Queue = queue.Queue()
+
+        def _run_stream():
+            async def _consume():
+                try:
+                    async for item in stream_job_http(
+                        self.orchestrator_url,
+                        query=user_message,
+                        context=self._build_context(messages),
+                        model_hint=model_hint,
+                    ):
+                        q.put(item)
+                except Exception as e:
+                    q.put(("failed", str(e)))
+                finally:
+                    q.put(("done", None))
+            asyncio.run(_consume())
+
+        threading.Thread(target=_run_stream, daemon=True).start()
 
         think_buf = []
         answer_buf = []
         think_open = False
-        assistant_result = None
 
         try:
             while True:
-                try:
-                    kind, chunk = loop.run_until_complete(agen.__anext__())
-                except StopAsyncIteration:
+                kind, chunk = q.get()
+
+                if kind == "done":
                     break
 
-                if kind == "think":
+                elif kind == "think":
                     if not think_open:
                         yield "<think>"
                         think_open = True
@@ -249,6 +266,7 @@ class Pipeline:
 
                 elif kind == "token":
                     if think_open:
+                        # Close think tag at first token — before any GeneratorExit is possible
                         yield "</think>"
                         think_open = False
                     answer_buf.append(chunk)
@@ -264,25 +282,17 @@ class Pipeline:
                     break
 
         except GeneratorExit:
-            log("lfbrain", "pipe — GeneratorExit: stream interrupted by user")
-            try:
-                loop.run_until_complete(agen.aclose())
-                log("lfbrain", "pipe — async generator closed cleanly")
-            except Exception as e:
-                log("lfbrain", f"pipe — agen.aclose() error: {e}")
-            if think_open:
-                yield f"{self.ts()} ; Stream interrupted by user\n</think>"
+            # Do not yield here — GeneratorExit forbids it.
+            # Thread will drain naturally. httpx stream closes via agen garbage collection.
+            log("lfbrain", "pipe — GeneratorExit: stop consuming queue")
             if not answer_buf:
                 answer_buf.append("FAILED: interrupted by user")
 
         finally:
-            if think_open:
-                yield "</think>"
-            loop.close()
             think_text = "".join(think_buf)
             answer_text = "".join(answer_buf)
             if think_text:
-                assistant_result = f"<think>{think_text}</think>\n{answer_text}"
+                assistant_result = f"<think>{think_text}</think>{answer_text}"
             else:
                 assistant_result = answer_text
             if assistant_result:
@@ -298,4 +308,3 @@ class Pipeline:
                 delete_job(job["job_id"])
                 log("lfbrain", f"outlet — deleted job {job['job_id'][:8]}...")
         return body
-    
