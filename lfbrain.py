@@ -18,9 +18,10 @@
 # Dev Notes:
 #   pipe() is a sync Generator - async pipe is not supported in pipelines framework.
 #   __event_emitter__ is not supported in pipelines framework.
-#   pipe() bridges async stream_job_http() via threading.Thread + queue.Queue.
-#   asyncio.run() in thread creates isolated event loop — no conflict with anyio.
-#   GeneratorExit stops queue consumption only — no yield, no loop ops. Thread drains naturally.
+#   pipe() bridges async stream_job_http() via threading.Thread + two-queue back-pressure design.
+#   stream thread → q (unbounded) → relay thread → out_q (maxsize=8) → pipe() yields.
+#   relay thread detects consumer dropout via out_q.put(timeout=2.0) → cancels stream task.
+#   Kill is independent of GeneratorExit timing — fires ~2s after consumer stops calling next().
 #   </think> closed at first token chunk — before GeneratorExit can interfere.
 #   lfbrain_chat_id is injected by inlet() into body — pipe() cannot access chat_id directly.
 #   outlet() uses body.get("chat_id") directly — OpenWebUI always provides it there.
@@ -224,20 +225,25 @@ class Pipeline:
         model_hint = (get_chat(chat_id) or {}).get("model_hint", DEFAULT_MODEL)
         log("lfbrain", f"pipe — model_hint={model_hint}")
 
-        # Bridge async stream_job_http() into sync pipe() via a dedicated thread + queue.
-        # Manual loop management (instead of asyncio.run) lets us cancel the task from
-        # outside the thread on GeneratorExit, which closes the httpx connection to the
-        # orchestrator — Starlette detects the disconnect and cancels stream_job_tokens(),
-        # which closes the connection to llama-server (broken pipe → llama-server stops).
+        # Bridge async stream_job_http() into sync pipe() via thread + two-queue back-pressure design.
+        #
+        # Architecture:
+        #   stream thread  →  q (unbounded)  →  relay thread  →  out_q (maxsize=8)  →  pipe() yields
+        #
+        # Kill mechanism (independent of GeneratorExit timing):
+        #   When the consumer (OpenWebUI) stops calling next() on the generator, out_q fills up.
+        #   relay thread's out_q.put(timeout=2.0) raises queue.Full after 2 seconds.
+        #   relay thread calls call_soon_threadsafe(task.cancel) → httpx closes → orchestrator
+        #   detects disconnect → stream_job_tokens() cancelled → llama-server gets broken pipe → stops.
+        #   This fires ~2s after consumer dropout, regardless of when GeneratorExit arrives.
         q: queue.Queue = queue.Queue()
+        out_q: queue.Queue = queue.Queue(maxsize=8)
         _task_ref: list = []
         _loop_ref: list = []
-        _stream_ready = threading.Event()
 
         def _run_stream():
             async def _consume():
                 _task_ref.append(asyncio.current_task())
-                _stream_ready.set()
                 try:
                     async for item in stream_job_http(
                         self.orchestrator_url,
@@ -254,12 +260,26 @@ class Pipeline:
                     q.put(("done", None))
             loop = asyncio.new_event_loop()
             _loop_ref.append(loop)
-            try:
-                loop.run_until_complete(_consume())
-            finally:
-                loop.close()
+            loop.run_until_complete(_consume())
+
+        def _relay():
+            """Move q → out_q. If out_q stays full for 2s, consumer dropped — cancel stream."""
+            while True:
+                kind, chunk = q.get()
+                while True:
+                    try:
+                        out_q.put((kind, chunk), timeout=2.0)
+                        break
+                    except queue.Full:
+                        log("lfbrain", "pipe — relay: consumer dropped, cancelling stream")
+                        if _loop_ref and _task_ref and not _loop_ref[0].is_closed():
+                            _loop_ref[0].call_soon_threadsafe(_task_ref[0].cancel)
+                        return  # stream kill done — relay exits
+                if kind == "done":
+                    return
 
         threading.Thread(target=_run_stream, daemon=True).start()
+        threading.Thread(target=_relay, daemon=True).start()
 
         think_buf = []
         answer_buf = []
@@ -267,7 +287,7 @@ class Pipeline:
 
         try:
             while True:
-                kind, chunk = q.get()
+                kind, chunk = out_q.get()
 
                 if kind == "done":
                     break
@@ -297,14 +317,10 @@ class Pipeline:
                     break
 
         except GeneratorExit:
-            # Do not yield here — GeneratorExit forbids it.
-            # Cancel the stream task so httpx closes the connection to the orchestrator.
-            # Starlette detects client disconnect → cancels stream_job_tokens() →
-            # cancels _stream_llamaserver() → closes httpx connection to llama-server →
-            # broken pipe on next token write → llama-server stops.
+            # Backup kill path — fires when framework eventually calls .close() on the generator.
+            # Primary kill already handled by relay thread after 2s consumer dropout.
             log("lfbrain", "pipe — GeneratorExit: cancelling stream task")
-            _stream_ready.wait(timeout=2)
-            if _loop_ref and _task_ref:
+            if _loop_ref and _task_ref and not _loop_ref[0].is_closed():
                 _loop_ref[0].call_soon_threadsafe(_task_ref[0].cancel)
             if not answer_buf:
                 answer_buf.append("FAILED: interrupted by user")
