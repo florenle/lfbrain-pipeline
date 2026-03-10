@@ -143,6 +143,8 @@ async def stream_job_http(
                         log("lfb_orchestrator", f"stream_job_http error — {chunk}")
                         yield ("failed", chunk)
                         return
+                    elif kind == "usage":
+                        yield ("usage", data.get("usage", {}))
                     elif kind in ("think", "token"):
                         yield (kind, chunk)
     except Exception as e:
