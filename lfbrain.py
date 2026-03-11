@@ -36,7 +36,7 @@
 #   LFB03102026A: token chunks with literal <think>/<\/think> text are escaped via U+200B
 #   to prevent tag_output_handler() regex from treating them as reasoning block delimiters.
 #
-# Schema: LFB03112026A
+# Schema: LFB03112026B
 
 import asyncio
 import os
@@ -59,7 +59,6 @@ from lfb_sqlite import (
     get_chat,
     update_chat_title,
     update_chat_model_hint,
-    clear_chat_summaries,
 )
 from lfb_sqlite_blocks import (
     add_block,
@@ -160,6 +159,37 @@ class Pipeline:
         except Exception as e:
             log("lfbrain", f"_get_accurate_prompt_tokens failed: {e}")
             return 0
+
+    def _compute_usage(
+        self,
+        chat_id: str,
+        block_id: str,
+        llm_usage: dict | None,
+        think_buf: list[str],
+        answer_buf: list[str],
+    ) -> dict:
+        """Build a usage dict from DB prompt tokens + provider or estimated completion tokens.
+
+        Used in all exit paths (done, failed, interrupted) so the frontend
+        context pie always receives a non-zero snapshot.
+        """
+        prompt_tokens = self._get_accurate_prompt_tokens(chat_id, exclude_block_id=block_id)
+        if llm_usage and llm_usage.get("completion_tokens") is not None:
+            completion_tokens = llm_usage["completion_tokens"]
+        else:
+            answer_text = "".join(think_buf) + "".join(answer_buf)
+            if self.encoder:
+                try:
+                    completion_tokens = len(self.encoder.encode(answer_text))
+                except Exception:
+                    completion_tokens = max(0, len(answer_text) // 4)
+            else:
+                completion_tokens = max(0, len(answer_text) // 4)
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }
 
     async def inlet(self, body: dict, __user__: dict) -> dict:
         chat_id = (
@@ -311,6 +341,15 @@ class Pipeline:
                         log("lfbrain", "pipe — relay: consumer dropped, cancelling stream")
                         if _loop_ref and _task_ref and not _loop_ref[0].is_closed():
                             _loop_ref[0].call_soon_threadsafe(_task_ref[0].cancel)
+                        # Drain out_q so we can push the done sentinel.
+                        # out_q is full (that's why we're here) — clear it first,
+                        # then push done so pipe()'s while loop emits usage and exits cleanly.
+                        try:
+                            while not out_q.empty():
+                                out_q.get_nowait()
+                        except Exception:
+                            pass
+                        out_q.put(("done", None))
                         return
                 if kind == "done":
                     return
@@ -324,6 +363,7 @@ class Pipeline:
         answer_started = False
         token_pending = ""
         llm_usage: dict | None = None
+        interrupted = False  # set True on GeneratorExit so finally can emit usage
 
         try:
             while True:
@@ -333,27 +373,8 @@ class Pipeline:
                     if token_pending:
                         yield token_pending
                         token_pending = ""
-                    accurate_pt = self._get_accurate_prompt_tokens(chat_id, exclude_block_id=block_id)
-                    if llm_usage and llm_usage.get("completion_tokens") is not None:
-                        accurate_ct = llm_usage["completion_tokens"]
-                    else:
-                        answer_text = "".join(think_buf) + "".join(answer_buf)
-                        encoder = getattr(self, "encoder", None)
-                        if encoder is not None:
-                            try:
-                                accurate_ct = len(encoder.encode(answer_text))
-                            except Exception as e:
-                                log("lfbrain", f"answer encode failed: {e}")
-                                accurate_ct = max(0, len(answer_text) // 4)
-                        else:
-                            accurate_ct = max(0, len(answer_text) // 4)
-
-                    _usage = {
-                        "prompt_tokens": accurate_pt,
-                        "completion_tokens": accurate_ct,
-                        "total_tokens": accurate_pt + accurate_ct,
-                    }
-                    log("lfbrain", f"pipe — usage: {accurate_pt}+{accurate_ct}={accurate_pt + accurate_ct}")
+                    _usage = self._compute_usage(chat_id, block_id, llm_usage, think_buf, answer_buf)
+                    log("lfbrain", f"pipe — usage: {_usage['prompt_tokens']}+{_usage['completion_tokens']}={_usage['total_tokens']}")
                     yield {"usage": _usage}
                     break
 
@@ -372,6 +393,12 @@ class Pipeline:
                     if think_open:
                         yield "</think>"
                         think_open = False
+                    if not answer_started:
+                        # Emit a usage snapshot at the first token so the context pie
+                        # shows a non-zero value even if the stream is interrupted before done.
+                        # completion_tokens=0 here; the final done event updates it accurately.
+                        _early_usage = self._compute_usage(chat_id, block_id, llm_usage, think_buf, [])
+                        yield {"usage": _early_usage}
                     answer_started = True
                     answer_buf.append(chunk)
                     # Escape literal <think>/</think> in answer tokens via U+200B so
@@ -398,12 +425,16 @@ class Pipeline:
                     error_msg = f"{self.ts()} ; Failed: {chunk}"
                     yield error_msg
                     answer_buf.append(f"FAILED: {chunk}")
+                    _usage = self._compute_usage(chat_id, block_id, llm_usage, think_buf, answer_buf)
+                    yield {"usage": _usage}
                     break
 
         except GeneratorExit:
             # Backup kill path — fires when framework calls .close() on the generator.
             # Primary kill already handled by relay thread after 2s consumer dropout.
+            # Cannot yield here — GeneratorExit forbids it. Usage is emitted in finally instead.
             token_pending = ""
+            interrupted = True
             log("lfbrain", "pipe — GeneratorExit: cancelling stream task")
             if _loop_ref and _task_ref and not _loop_ref[0].is_closed():
                 _loop_ref[0].call_soon_threadsafe(_task_ref[0].cancel)
@@ -411,6 +442,13 @@ class Pipeline:
                 answer_buf.append("FAILED: interrupted by user")
 
         finally:
+            if interrupted:
+                # Emit usage snapshot so frontend context pie shows non-zero on interruption.
+                # Safe to yield here — finally runs outside the GeneratorExit except block.
+                _usage = self._compute_usage(chat_id, block_id, llm_usage, think_buf, answer_buf)
+                log("lfbrain", f"pipe — interrupted usage: {_usage['prompt_tokens']}+{_usage['completion_tokens']}")
+                yield {"usage": _usage}
+
             think_text = "".join(think_buf)
             answer_text = "".join(answer_buf)
             if think_text:
