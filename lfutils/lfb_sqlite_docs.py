@@ -14,11 +14,13 @@
 #   lfb_log: log()
 #
 # Dev Notes:
-#   doc_id is a UUID generated at upload time
-#   Files live at chats/chat_<id>/docs/<filename> on disk
-#   doc_exists() replaces the filename-keyed skip logic in lfb_OwuiFileHandler.py
+#   doc_id is a UUID generated at upload time.
+#   Files live at chats/chat_<id>/docs/<filename> on disk.
+#   doc_exists() replaces the filename-keyed skip logic in lfb_OwuiFileHandler.py.
 #   Deleting a chat cascades to docs rows via foreign key — disk files must be
-#   cleaned up separately (handled by retention cron)
+#   cleaned up separately (handled by retention cron).
+#
+# Schema: LFB03112026A
 
 import uuid
 from datetime import datetime, timezone
@@ -46,26 +48,22 @@ def add_doc(chat_id, filename):
 
 
 def get_docs_by_chat(chat_id):
-    log("lfb_sqlite_docs", f"get_docs_by_chat({chat_id})")
     conn = get_conn()
     rows = conn.execute(
         "SELECT * FROM docs WHERE chat_id = ? ORDER BY uploaded_at", (chat_id,)
     ).fetchall()
     conn.close()
-    log("lfb_sqlite_docs", f"get_docs_by_chat → {len(rows)} docs")
+    log("lfb_sqlite_docs", f"get_docs_by_chat({chat_id}) → {len(rows)} docs")
     return [dict(r) for r in rows]
 
 
 def doc_exists(chat_id, filename):
-    log("lfb_sqlite_docs", f"doc_exists({chat_id}, {filename})")
     conn = get_conn()
     row = conn.execute(
         "SELECT 1 FROM docs WHERE chat_id = ? AND filename = ?", (chat_id, filename)
     ).fetchone()
     conn.close()
-    result = row is not None
-    log("lfb_sqlite_docs", f"doc_exists → {result}")
-    return result
+    return row is not None
 
 
 def delete_docs_by_chat(chat_id):

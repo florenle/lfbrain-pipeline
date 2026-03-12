@@ -75,7 +75,6 @@ def add_block(chat_id, block_id, owui_message_id=None, user_content=None, assist
 
 
 def get_block(block_id):
-    log("lfb_sqlite_blocks", f"get_block({block_id[:8]}...)")
     conn = get_conn()
     row = conn.execute("SELECT * FROM blocks WHERE block_id = ?", (block_id,)).fetchone()
     conn.close()
@@ -83,7 +82,6 @@ def get_block(block_id):
 
 
 def get_blocks_by_chat(chat_id):
-    log("lfb_sqlite_blocks", f"get_blocks_by_chat({chat_id})")
     conn = get_conn()
     rows = conn.execute(
         "SELECT * FROM blocks WHERE chat_id = ? ORDER BY seq", (chat_id,)

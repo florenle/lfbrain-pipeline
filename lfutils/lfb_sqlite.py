@@ -116,9 +116,7 @@ def get_chat(chat_id):
     conn = get_conn()
     row = conn.execute("SELECT * FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
     conn.close()
-    result = dict(row) if row else None
-    log("lfb_sqlite", f"get_chat({chat_id}) → {result}")
-    return result
+    return dict(row) if row else None
 
 
 def update_chat_title(chat_id, title):
