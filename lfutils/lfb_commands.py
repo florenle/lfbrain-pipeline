@@ -21,12 +21,10 @@
 #   These functions only yield output — pipe() writes user_content + assistant_content to DB.
 #   /load JSON is a fenced code block in assistant response — durable, survives branch reconciliation.
 #   Slash command blocks are filtered from /load JSON output.
-#   assistant_content in DB contains raw <think>...</think> blocks — stripped in /load output.
 #
-# Schema: LFB03052026B
+# Schema: LFB03112026A
 
 import json
-import re
 from lfb_sqlite import get_chat, list_chats
 from lfb_sqlite_blocks import get_blocks_by_chat
 from lfb_sqlite_docs import get_docs_by_chat
@@ -44,10 +42,6 @@ def _fmt_dt(iso_str: str | None) -> str:
         return dt.strftime("%Y-%m-%d %H:%M")
     except Exception:
         return iso_str
-
-
-def _strip_think(content: str) -> str:
-    return re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
 
 
 def handle_command(command: str, chat_id: str, api_key: str = ""):
@@ -116,7 +110,7 @@ def _cmd_load(parts: list, chat_id: str):
             filtered_blocks.append({
                 "seq": b["seq"],
                 "user": user,
-                "assistant": _strip_think(b.get("assistant_content") or ""),
+                "assistant": b.get("assistant_content") or "",
             })
 
     title = chat.get("title") or "Untitled"

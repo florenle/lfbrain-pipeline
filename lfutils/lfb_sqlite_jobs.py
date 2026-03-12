@@ -1,7 +1,7 @@
 # lfb_sqlite_jobs.py
 # Status: In Development
 # Role: CRUD operations for the jobs table.
-#       Tracks active job lifecycle. Replaces last.json.
+#       Tracks active job lifecycle per chat.
 #
 # Key Functions:
 #   create_job(job_id, block_id, chat_id): Inserts new job row with status=running.
@@ -10,18 +10,18 @@
 #   update_job_status(job_id, status, error): Updates status and optionally error.
 #   set_killme(job_id): Sets killme=1 for a given job.
 #   delete_job(job_id): Removes job row on completion or failure.
-#   get_active_job_by_chat(chat_id): Returns most recent job with status='running' for chat.
+#   get_active_job_by_chat(chat_id): Returns most recent running job for chat.
 #
 # Dependencies:
 #   lfb_sqlite: get_conn()
 #   lfb_log: log()
 #
 # Dev Notes:
-#   Job row is created in pipe() at submission time
-#   Orchestrator returns status updates to pipeline via HTTP polling
-#   Pipeline writes all status updates to DB — orchestrator never touches DB
-#   On job completion or failure, pipeline calls delete_job()
-#   killme=1 is set by /kill command — pipeline checks after each status poll
+#   Job row is created in pipe() at submission time and deleted in outlet() on completion.
+#   set_killme() is called by /kill command — checked by orchestrator after each poll.
+#   Orphaned running jobs are marked failed at startup in init_db().
+#
+# Schema: LFB03112026A
 
 from datetime import datetime, timezone
 from lfb_sqlite import get_conn
