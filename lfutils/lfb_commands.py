@@ -7,13 +7,11 @@
 #   _cmd_info(parts, chat_id): Returns one-line chat info including docs for current or specified chat.
 #   _cmd_load(parts, chat_id): Yields summary line then fenced JSON of full chat. Durable.
 #   _cmd_lsc(chat_id): Lists all chats, one line each.
-#   _cmd_kill(parts): Sends kill signal to a job.
 #
 # Dependencies:
 #   lfb_sqlite: get_chat(), list_chats()
 #   lfb_sqlite_blocks: get_blocks_by_chat()
 #   lfb_sqlite_docs: get_docs_by_chat()
-#   lfb_sqlite_jobs: set_killme()
 #   lfb_log: log()
 #
 # Dev Notes:
@@ -28,7 +26,6 @@ import json
 from lfb_sqlite import get_chat, list_chats
 from lfb_sqlite_blocks import get_blocks_by_chat
 from lfb_sqlite_docs import get_docs_by_chat
-from lfb_sqlite_jobs import set_killme
 from lfb_log import log
 
 
@@ -61,13 +58,9 @@ def handle_command(command: str, chat_id: str, api_key: str = ""):
         yield from _cmd_lsc(chat_id)
         return
 
-    if cmd == "/kill":
-        yield from _cmd_kill(parts)
-        return
-
     log("lfb_commands", f"unknown command: {cmd}")
     yield f"Unknown command: {command}\n"
-    yield "Available commands: /info, /load, /lsc, /kill\n"
+    yield "Available commands: /info, /load, /lsc\n"
 
 
 def _cmd_info(parts: list, chat_id: str):
@@ -144,13 +137,3 @@ def _cmd_lsc(chat_id: str):
             f"{c['chat_id']} · Title: {c.get('title') or 'Untitled'} · "
             f"Modified: {_fmt_dt(c.get('last_updated'))} · Description: {c.get('description') or ''}\n"
         )
-
-
-def _cmd_kill(parts: list):
-    if len(parts) < 2:
-        yield "Usage: /kill <job_id>\n"
-        return
-    job_id = parts[1]
-    log("lfb_commands", f"_cmd_kill(job_id={job_id})")
-    set_killme(job_id)
-    yield f"Kill signal sent to job {job_id}"

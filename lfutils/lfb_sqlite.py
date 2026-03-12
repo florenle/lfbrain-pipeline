@@ -15,7 +15,7 @@
 #   clear_chat_summaries(chat_id): Sets description=NULL, summary=NULL, updates last_updated.
 #   toggle_save(chat_id): Flips save flag 0↔1.
 #   list_chats(): Returns all chats as {chat_id, title, description}.
-#   delete_chat(chat_id): Deletes chat and cascades to blocks, jobs, docs.
+#   delete_chat(chat_id): Deletes chat and cascades to blocks, docs.
 #
 # Dependencies:
 #   lfb_log: log()
@@ -23,7 +23,7 @@
 # Dev Notes:
 #   DB lives at /home/florenle/x/dev/openwebui/chats/lfbrain.db
 #   WAL mode enabled for safe concurrent access
-#   Foreign keys enforced — deleting a chat cascades to blocks, jobs, docs
+#   Foreign keys enforced — deleting a chat cascades to blocks, docs
 #   Slash command turns are never written to the DB
 #
 # Schema: LFB03112026A
@@ -70,16 +70,6 @@ def init_db():
                 FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
                 UNIQUE (chat_id, seq)
             );
-            CREATE TABLE IF NOT EXISTS jobs (
-                job_id      TEXT PRIMARY KEY,
-                block_id    TEXT NOT NULL,
-                chat_id     TEXT NOT NULL,
-                status      TEXT NOT NULL DEFAULT 'running',
-                killme      INTEGER NOT NULL DEFAULT 0,
-                error       TEXT,
-                created_at  TEXT NOT NULL,
-                FOREIGN KEY (block_id) REFERENCES blocks(block_id) ON DELETE CASCADE
-            );
             CREATE TABLE IF NOT EXISTS docs (
                 doc_id      TEXT PRIMARY KEY,
                 chat_id     TEXT NOT NULL,
@@ -88,9 +78,6 @@ def init_db():
                 FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
             );
         """)
-        conn.execute(
-            "UPDATE jobs SET status = 'failed', error = 'orphaned at startup' WHERE status = 'running'"
-        )
     conn.close()
     log("lfb_sqlite", "init_db() complete")
 

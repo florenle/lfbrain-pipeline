@@ -9,10 +9,10 @@
 #            strips message ids.
 #   pipe(): Creates block, streams tokens live via bridge_stream(). Think and answer chunks
 #           yielded immediately. Slash commands handled inline.
-#   outlet(): True no-op except delete_job().
+#   outlet(): True no-op — returns body unchanged.
 #
 # Dependencies:
-#   lfb_OwuiFileHandler, lfb_sqlite, lfb_sqlite_blocks, lfb_sqlite_jobs,
+#   lfb_OwuiFileHandler, lfb_sqlite, lfb_sqlite_blocks,
 #   lfb_pipeStream, lfb_commands, lfb_log
 #
 # Dev Notes:
@@ -53,7 +53,6 @@ from lfb_sqlite_blocks import (
     get_blocks_by_chat,
     sync_blocks,
 )
-from lfb_sqlite_jobs import get_active_job_by_chat, delete_job
 from lfb_commands import handle_command
 from lfb_log import log
 from lfb_pipeStream import bridge_stream
@@ -327,11 +326,4 @@ class Pipeline:
                 update_block_assistant(block_id, assistant_result, incomplete=incomplete)
 
     async def outlet(self, body: dict, __user__: dict) -> dict:
-        chat_id = body.get("chat_id") or body.get("metadata", {}).get("chat_id")
-        log("lfbrain", f"outlet(chat_id={chat_id})")
-        if chat_id:
-            job = get_active_job_by_chat(chat_id)
-            if job:
-                delete_job(job["job_id"])
-                log("lfbrain", f"outlet — deleted job {job['job_id'][:8]}...")
         return body
